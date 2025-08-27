@@ -75,8 +75,7 @@ avito-parser-bot/
 | Python        | Основной язык разработки  |
 | Aiogram       | Telegram Bot API          |
 | Selenium      | Автоматизация браузера    |
-| Undetected-   | Обход антибот систем      |
-  Chromedriver
+| Undetected-Chromedriver   | Обход антибот систем      |
 | BeatifulSoup4 | Парсинг Html              |
 | AioSQLite     | Асинхронная работа с бд   |
 | Sqlite3       | База данных               |
