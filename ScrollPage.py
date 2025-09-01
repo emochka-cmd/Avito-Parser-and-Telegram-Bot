@@ -4,6 +4,7 @@ import json
 from typing import Dict, Any, Generator
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import NoSuchElementException, StaleElementReferenceException
 from fake_useragent import UserAgent
@@ -26,6 +27,9 @@ class ScrollPage:
         self._load_cookies()
         self.driver.refresh()
 
+        self._stop_flag = False 
+
+        self.wait = WebDriverWait(self.driver, 10)
 
         check = self._check_block()
         if check["blocked"] or check["captcha"]:
@@ -80,10 +84,17 @@ class ScrollPage:
         
         return self.driver.page_source
 
+    def stop_scroll(self):
+        """Устанавливаем флаг для остановки скролла"""
+        self._stop_flag = True
+
 
     def scroll_all_page(self) -> Generator:
         try:
             while True:
+                if self._stop_flag:   # ⛔ проверяем флаг
+                    print("🛑 Парсинг остановлен пользователем")
+                    break
                 try:
                 # Ждем загрузки хотя бы одного объявления
                     self.wait.until(
