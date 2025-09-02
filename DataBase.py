@@ -2,16 +2,20 @@ import aiosqlite
 import asyncio
 import sqlite3
 
-
+from typing import List, Dict, Any
 class DataBase:
     def __init__(self):
         self.db_name = 'for_avito.db'
         self.connection: aiosqlite.Connection | None = None
+        self.lock = asyncio.Lock()
 
 
     async def connect(self):
-        self.connection = await aiosqlite.connect(self.db_name)
-        self.connection.row_factory = sqlite3.Row
+        if self.connection is None:  # <<< проверяем, чтобы не подключиться повторно
+            self.connection = await aiosqlite.connect(self.db_name, timeout=30)
+            self.connection.row_factory = sqlite3.Row
+            await self.connection.execute("PRAGMA journal_mode=WAL;")
+            await self.connection.execute("PRAGMA synchronous=NORMAL;")
 
 
     # --- Взаимодефствие с БД в которой храняться обьявлениями авито
@@ -23,7 +27,7 @@ class DataBase:
                 title TEXT,
                 description TEXT,
                 price TEXT,
-                url TEXT,
+                url TEXT UNIQUE,
                 ad_time TEXT,
                 seller TEXT,
                 seller_grade TEXT
@@ -47,11 +51,12 @@ class DataBase:
             )
             for ad in ads
         ]
-        await self.connection.executemany("""
-            INSERT INTO for_avito(image, title, description, price, url, ad_time, seller, seller_grade)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, values)
-        await self.connection.commit()
+        async with self.lock:
+            await self.connection.executemany("""
+                INSERT OR IGNORE INTO for_avito(image, title, description, price, url, ad_time, seller, seller_grade)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, values)
+            await self.connection.commit()
 
 
     async def count_ads(self) -> int:
@@ -59,6 +64,27 @@ class DataBase:
         async with self.connection.execute("SELECT COUNT(*) FROM for_avito") as cursor:
             row = await cursor.fetchone()
             return row[0]
+
+
+    async def deleate_priduct_db(self):
+        try:
+            async with self.lock:
+                await self.connection.execute("""
+            DELETE FROM for_avito """)
+                await self.connection.commit()
+        except Exception as e:
+            print(f'Ошибка с удалением из бд: {e}') 
+
+
+    async def get_product_data(self, num: int) -> List[Dict[str, Any]]:
+        async with self.lock:
+            async with self.connection.execute("""
+                SELECT title, description, price, url, ad_time, seller, seller_grade 
+                FROM for_avito 
+                LIMIT ?
+            """, (num,)) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
 
 
     # --- Взаимодействие с таблицей админов

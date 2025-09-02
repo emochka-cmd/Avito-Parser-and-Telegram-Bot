@@ -75,19 +75,6 @@ class Parser:
         return result
 
 
-async def main():
-    # читаем локальный HTML
-    with open("page_1.html", "r", encoding="utf-8") as f:
-        html = f.read()
 
-    # создаём парсер
-    parser = Parser(html)
-
-    # запускаем парсинг
-    ads = await parser.parsed()
-    print (len(ads))
     
 
-
-if __name__ == "__main__":
-    asyncio.run(main())

@@ -1,11 +1,13 @@
 from aiogram.fsm.context import FSMContext
 from aiogram import Router, F
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from aiogram.types import KeyboardButton, ReplyKeyboardMarkup, Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.filters import CommandStart
 from aiogram.fsm.state import StatesGroup, State
 from database_istance import db
 import asyncio
+import glob
 from ScrollPage import ScrollPage
+from HtmlParser import Parser
 import validators
 import os
 
@@ -13,12 +15,19 @@ import os
 class AdminStates(StatesGroup):
     waiting_for_url = State()
     parsing_in_progress = State()
+    wait_num = State()
+    waitig_message_for_admin = State()
+
 
 # --- Создаем роутер --- 
 admin_router = Router()
 
 # --- Список админов ---
 ADMINS = list(map(int, os.getenv("TgAdmins", "0").split(",")))
+
+
+# --- Владелец бота ---
+OWNER = int(os.getenv("Owner", 0))
 
 # --- Ограничиваем роутер только для админов ---
 admin_router.message.filter(F.from_user.id.in_(ADMINS))
@@ -27,6 +36,8 @@ admin_router.callback_query.filter(F.from_user.id.in_(ADMINS))
 active_parser: ScrollPage | None = None
 
 # --- Все клавиатуры: ---
+
+# --- Inline ---
 def start_parsing_kb() -> InlineKeyboardMarkup:
     inline_main = [
         [InlineKeyboardButton(text="✅ Да", callback_data='parse_confirm_yes'),
@@ -43,31 +54,148 @@ def stop_parsing_kb() -> InlineKeyboardMarkup:
     
 def main_kb() -> InlineKeyboardMarkup:
     inline_main = [
-        [InlineKeyboardButton(text="📜 Информация о 5 последних объявлениях", callback_data='info_five_ads')],
-        [InlineKeyboardButton(text="🔎 Количество новых объявлений по теме", callback_data='ads_count')],
-        [InlineKeyboardButton(text="🔄 Включить/Выключить авто-отправку", callback_data='avto')],
-        [InlineKeyboardButton(text="🗑️ Стереть все из базы", callback_data='clear_all')],
+        [InlineKeyboardButton(text="🧐 Узнать информацию о обьявлениях", callback_data='get_data')],
         [InlineKeyboardButton(text="📥  Скачать HTML код", callback_data='start_parsing')],
-        [InlineKeyboardButton(text="📥  Извлечь данные из HTML кода", callback_data='start_parsing')],
+        [InlineKeyboardButton(text="🚀 Извлечь данные из HTML кода", callback_data='extract_data')],
         [InlineKeyboardButton(text="🔍 Узнать текущую ссылку для парсинга", callback_data='current_url')],
         [InlineKeyboardButton(text="🔗 Задать новую ссылку для парсинга", callback_data='new_url')],
         [InlineKeyboardButton(text="📊 Сколько всего объявлений", callback_data='ads_total')],
+        [InlineKeyboardButton(text="🗑️ Стереть все из базы", callback_data='clear_all')],
     ]
     return InlineKeyboardMarkup(inline_keyboard=inline_main)
 
+
+# --- Reply ---
+def main_reply_kb() -> ReplyKeyboardMarkup:
+    kb_list = [
+        [KeyboardButton(text='📝 Меню'), KeyboardButton(text='✏️ Написать админу')]
+    ]
+    keyboard = ReplyKeyboardMarkup(keyboard=kb_list, resize_keyboard=True, one_time_keyboard=True)
+    return keyboard
+
+
+# --- Логика для reply клавиатур ---
+@admin_router.message(F.text == '✏️ Написать админу')
+async def reply_write_admin(message: Message, state: FSMContext):
+    await message.answer("✍️ Напишите сообщение для администратора. Оно будет переслано ему.")
+    await state.set_state(AdminStates.waitig_message_for_admin)
+
+
+@admin_router.message(F.text == '📝 Меню')
+async def send_menu(message: Message):
+    await message.answer('📋 Главное меню:', reply_markup=main_kb())
+
+
+# --- Логика отправки ссобщений администратору ---
+@admin_router.message(AdminStates.waitig_message_for_admin)
+async def send_message_for_admin(message: Message, state: FSMContext):
+    try:
+        await message.bot.send_message(OWNER, f"📩 Сообщение от {message.from_user.id}:\n\n{message.text}")
+        await message.answer("✅ Ваше сообщение отправлено администратору.", reply_markup=main_reply_kb())
+        await state.clear()
+    except Exception as e:
+        print(f"Ошибка отправки сообщения владельцу: {e}")
+    
 
 # --- при Start ---
 @admin_router.message(CommandStart())
 async def admin_start(message: Message):
     await message.answer_sticker('CAACAgIAAxkBAAERTqxombj0GO3zAAFj_8AHu7XfjbmkoeEAAgEBAAJWnb0KIr6fDrjC5jQ2BA')
     await message.answer("👇 Выберите действие:", reply_markup=main_kb())
+    await message.answer("📲 Главное меню доступно на клавиатуре.", reply_markup=main_reply_kb())
+
+
+# --- Get Data ---
+@admin_router.callback_query(F.data == 'get_data')
+async def get_data(call: CallbackQuery, state: FSMContext):
+    await call.message.edit_reply_markup(reply_markup=None)
+    await call.message.answer('Введите о скольки обьявлениях хотите получить информацию:', reply_markup=main_reply_kb())
+    await state.set_state(AdminStates.wait_num)
+
+
+@admin_router.message(AdminStates.wait_num)
+async def wait_num(message:Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer('Пожалуйста, введите **только число**.')
+        return
+    num = int(message.text)
+    await message.answer(f'Вы запросили информацию о {num} объявлениях:')
+
+    my_dict_list = await db.get_product_data(num=num)
+
+    if not my_dict_list:
+        await message.answer("Объявлений не найдено.")
+        return
+
+    for idx, ad in enumerate(my_dict_list, start=1):
+        text = (
+            f"<b>Информация о объявлении {idx}<\b>:\n"
+            f"<b>Название:<\b> {ad.get('title')}\n"
+            f"<b>Описание:<\b> {ad.get('description')}\n"
+            f"<b>Цена:<\b> {ad.get('price')}\n"
+            f"<b>Ссылка:<\b> {ad.get('url')}\n"
+            f"<b>Дата:<\b> {ad.get('ad_time')}\n"
+            f"<b>Продавец:<\b> {ad.get('seller')}\n"
+            f"<b>Рейтинг продавца:<\b> {ad.get('seller_grade')}"
+        )
+        await message.answer(text, parse_mode="HTML", reply_markup=main_reply_kb())
+    
+
+# --- Clear all ---
+@admin_router.callback_query(F.data == 'clear_all')
+async def clear_all_db(call: CallbackQuery):
+    await db.deleate_priduct_db()
+    await call.message.answer('✅ Бд с товарами успешно удалена', reply_markup=main_reply_kb())
+
+
+# --- Extract data ---
+async def parse_all_html_and_save(db):
+    files = sorted(glob.glob("page_*.html"))
+    ads_all = []
+
+    for file in files:
+        with open(file, "r", encoding="utf-8") as f:
+            html = f.read()
+
+        parser = Parser(html)
+        ads = await parser.parsed()
+        ads_all.extend(ads)
+
+    if ads_all:
+        await db.insert_ads(ads_all)
+    return len(ads_all)
+
+
+@admin_router.callback_query(F.data == 'extract_data')
+async def exctract_data(call: CallbackQuery):
+    """ Запускает извлечение данных из html """
+    try:
+        await call.message.edit_reply_markup(reply_markup=None)
+        await call.message.answer("⏳ Извлекаю данные из HTML файлов...")
+
+        before = await db.count_ads()  # сколько было в базе
+        total = await parse_all_html_and_save(db)
+        after = await db.count_ads()   # сколько стало
+
+        new_count = after - before
+        skipped = total - new_count
+
+        if new_count > 0:
+            await call.message.answer(
+                f"✅ В БД добавлено {new_count} новых объявлений.\n"
+                f"⏩ Пропущено как дубликаты: {skipped}",
+                reply_markup=main_kb()
+            )
+        else:
+            await call.message.answer("⚠️ Новых объявлений не найдено.", reply_markup=main_kb())
+
+    except Exception as e:
+        await call.message.answer(f"⚠️ Ошибка при извлечении: {e}", reply_markup=main_kb())
 
 
 # --- Start Parsing ---
 async def run_scroll_and_notify(sc: ScrollPage, call: CallbackQuery):
-    """
-    Запускает парсинг и уведомляет пользователя о прогрессе.
-    """
+    """ Запускает скачивание html """
     try:
         for idx, html in enumerate(sc.scroll_all_page()):
             await call.message.answer(f"✅ Скачана страница №{idx+1}")
@@ -150,7 +278,8 @@ async def no_parsing(call: CallbackQuery):
 async def current_url(call: CallbackQuery):
     await call.message.edit_reply_markup(reply_markup=None)
     url = await db.current_url(tg_id=call.from_user.id)
-    await call.message.answer(f'Текущая ссылка для парсинга: {url}') 
+    await call.message.answer(f'Текущая ссылка для парсинга: {url}', reply_markup=main_reply_kb())
+
 
 # --- Код отвечающий за изменение URL ---
 @admin_router.callback_query(F.data == 'new_url')
@@ -171,7 +300,7 @@ async def save_new_url(message: Message, state: FSMContext):
 
     try:
         await db.change_url(tg_id=tg_id, url=url)
-        await message.answer("✅ Url для парсинга изменён.")
+        await message.answer("✅ Url для парсинга изменён.", reply_markup=main_reply_kb())
     except Exception as e:
         print(f'Ошибка при изменении url для парсинга: {e}')
         await message.answer("⚠️ Произошла ошибка при сохранении URL.")
@@ -185,7 +314,7 @@ async def ads_total(call: CallbackQuery):
     try:
         await call.message.edit_reply_markup(reply_markup=None)
         total = await db.count_ads()
-        await call.message.answer(f'📊 В базе данных сейчас {total} объявлений.')
+        await call.message.answer(f'📊 В базе данных сейчас {total} объявлений.', reply_markup=main_reply_kb())
     except Exception as e:
         print(f'Ошибка при показе количества элементов в БД: {e}')
         await call.message.answer("⚠️ Ошибка при получении данных из базы.")
